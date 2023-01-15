@@ -5,6 +5,7 @@ use owo_colors::{OwoColorize, Style, StyledList};
 struct Theme {
     pwd: Style,
     brackets: Style,
+    submodule: Style,
     branch: Style,
     sep: Style,
     operation: Style,
@@ -16,6 +17,7 @@ impl Theme {
         Self {
             pwd: Style::new().bright_green(),
             brackets: Style::new().cyan(),
+            submodule: Style::new().bright_red(),
             branch: Style::new().bright_cyan(),
             sep: Style::new().bright_black(),
             operation: Style::new().bright_red(),
@@ -25,7 +27,7 @@ impl Theme {
 }
 
 struct Git {
-    root: Option<PathBuf>,
+    root: Vec<PathBuf>,
 }
 
 struct Stat {
@@ -37,15 +39,40 @@ struct Stat {
 impl Git {
     fn get() -> Self {
         let pwd = std::env::current_dir().unwrap();
-        let root = pwd.ancestors().map(|p| p.join(".git")).find(|p| p.exists());
+        let root = pwd
+            .ancestors()
+            .filter_map(|p| {
+                let g = p.join(".git");
+                if g.exists() {
+                    if g.is_file() {
+                        Some(
+                            std::fs::read_to_string(g)
+                                .unwrap()
+                                .trim()
+                                .strip_prefix("gitdir: ")
+                                .unwrap()
+                                .into(),
+                        )
+                    } else {
+                        Some(g)
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect();
 
         Self { root }
+    }
+
+    fn root(&self) -> Option<&PathBuf> {
+        self.root.first()
     }
 
     fn branch(&self) -> String {
         let mut s = String::new();
 
-        if let Some(root) = &self.root {
+        if let Some(root) = self.root() {
             let head = root.join("HEAD");
             if head.exists() {
                 let contents = std::fs::read_to_string(head).unwrap();
@@ -67,7 +94,7 @@ impl Git {
         let mut total = String::new();
         let mut branch = String::new();
 
-        if let Some(root) = &self.root {
+        if let Some(root) = self.root() {
             let rebase_merge = root.join("rebase-merge");
             if rebase_merge.exists() {
                 branch = std::fs::read_to_string(rebase_merge.join("head-name")).unwrap();
@@ -118,21 +145,29 @@ impl Git {
     }
 }
 
+fn conditional(value: &str, cond: bool) -> &str {
+    if cond {
+        value
+    } else {
+        ""
+    }
+}
+
 fn git_portion(t: &Theme) -> String {
     let git = Git::get();
 
-    if git.root.is_some() {
+    if !git.root.is_empty() {
         let git_stat = git.stat();
+        let in_submodule = git.root.len() > 1;
         format!(
             " {}",
             StyledList::from([
                 t.brackets.style("["),
+                t.submodule.style(conditional("SUBMODULE", in_submodule)),
+                t.sep.style(conditional(" | ", in_submodule)),
                 t.branch.style(&git.branch()),
-                t.sep.style(if git_stat.operation.is_empty() {
-                    ""
-                } else {
-                    " | "
-                }),
+                t.sep
+                    .style(conditional(" | ", !git_stat.operation.is_empty())),
                 t.operation.style(git_stat.operation),
                 t.ratio.style(&git_stat.ratio),
                 t.brackets.style("]"),
