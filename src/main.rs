@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use owo_colors::{OwoColorize, Style, StyledList};
 
@@ -30,10 +30,98 @@ struct Git {
     root: Vec<PathBuf>,
 }
 
+#[derive(Default)]
 struct Stat {
     operation: &'static str,
     ratio: String,
     _branch: String,
+}
+
+impl Stat {
+    fn rebase_merge(&mut self, root: &Path) -> Result<bool> {
+        let rebase_merge_folder = root.join("rebase-merge");
+        if rebase_merge_folder.exists() {
+            self._branch = read_maybe_missing_file(rebase_merge_folder.join("head-name"))?;
+            let step = read_maybe_missing_file(rebase_merge_folder.join("msgnum"))?;
+            let total = read_maybe_missing_file(rebase_merge_folder.join("end"))?;
+
+            self.set_ratio(&step, &total);
+
+            if rebase_merge_folder.join("interactive").exists() {
+                self.operation = "REBASE-i";
+            } else {
+                self.operation = "REBASE-m";
+            }
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn rebase_apply(&mut self, root: &Path) -> Result<bool> {
+        let rebase_apply_folder = root.join("rebase-apply");
+        if rebase_apply_folder.exists() {
+            let step = read_maybe_missing_file(rebase_apply_folder.join("next"))?;
+            let total = read_maybe_missing_file(rebase_apply_folder.join("last"))?;
+
+            self.set_ratio(&step, &total);
+
+            if rebase_apply_folder.join("rebasing").exists() {
+                self._branch = read_maybe_missing_file(rebase_apply_folder.join("head-name"))?;
+                self.operation = "REBASE";
+            } else if rebase_apply_folder.join("applying").exists() {
+                self.operation = "AM";
+            } else {
+                self.operation = "AM/REBASE";
+            }
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn handle_non_rebase(&mut self, root: &Path) {
+        if root.join("MERGE_HEAD").exists() {
+            self.operation = "MERGING";
+        } else if root.join("CHERRY_PICK_HEAD").exists() {
+            self.operation = "CHERRY-PICKING";
+        } else if root.join("REVERT_HEAD").exists() {
+            self.operation = "REVERTING";
+        } else if root.join("BISECT_LOG").exists() {
+            self.operation = "BISECTING";
+        }
+    }
+
+    fn set_ratio(&mut self, step: &str, total: &str) {
+        if !step.trim().is_empty() {
+            self.ratio = format!(" {}/{}", step.trim(), total.trim());
+        }
+    }
+}
+
+#[derive(Debug)]
+enum EnchantError {
+    MissingFile(PathBuf),
+}
+
+impl std::fmt::Display for EnchantError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EnchantError::MissingFile(p) => write!(f, "Missing file: {}", p.display()),
+        }
+    }
+}
+
+impl std::error::Error for EnchantError {}
+
+type Result<T> = std::result::Result<T, EnchantError>;
+
+fn read_maybe_missing_file(p: PathBuf) -> Result<String> {
+    if p.exists() {
+        Ok(std::fs::read_to_string(p).unwrap())
+    } else {
+        Err(EnchantError::MissingFile(p))
+    }
 }
 
 impl Git {
@@ -88,60 +176,18 @@ impl Git {
         s
     }
 
-    fn stat(&self) -> Stat {
-        let mut operation = "";
-        let mut step = String::new();
-        let mut total = String::new();
-        let mut branch = String::new();
+    fn stat(&self) -> Result<Stat> {
+        let mut stat = Stat::default();
 
         if let Some(root) = self.root() {
-            let rebase_merge = root.join("rebase-merge");
-            if rebase_merge.exists() {
-                branch = std::fs::read_to_string(rebase_merge.join("head-name")).unwrap();
-                step = std::fs::read_to_string(rebase_merge.join("msgnum")).unwrap();
-                total = std::fs::read_to_string(rebase_merge.join("end")).unwrap();
-
-                if rebase_merge.join("").exists() {
-                    operation = "REBASE-i";
-                } else {
-                    operation = "REBASE-m";
-                }
-            } else {
-                let rebase_apply = root.join("rebase-apply");
-                if rebase_apply.exists() {
-                    step = std::fs::read_to_string(rebase_apply.join("next")).unwrap();
-                    total = std::fs::read_to_string(rebase_apply.join("last")).unwrap();
-
-                    if rebase_apply.join("rebasing").exists() {
-                        branch = std::fs::read_to_string(rebase_apply.join("head-name")).unwrap();
-                        operation = "REBASE";
-                    } else if rebase_apply.join("applying").exists() {
-                        operation = "AM";
-                    } else {
-                        operation = "AM/REBASE";
-                    }
-                } else if root.join("MERGE_HEAD").exists() {
-                    operation = "MERGING";
-                } else if root.join("CHERRY_PICK_HEAD").exists() {
-                    operation = "CHERRY-PICKING";
-                } else if root.join("REVERT_HEAD").exists() {
-                    operation = "REVERTING";
-                } else if root.join("BISECT_LOG").exists() {
-                    operation = "BISECTING";
+            if !stat.rebase_merge(&root)? {
+                if !stat.rebase_apply(&root)? {
+                    stat.handle_non_rebase(&root);
                 }
             }
         }
 
-        let mut ratio = String::new();
-        if !step.trim().is_empty() {
-            ratio = format!(" {}/{}", step.trim(), total.trim());
-        }
-
-        Stat {
-            operation,
-            ratio,
-            _branch: branch,
-        }
+        Ok(stat)
     }
 }
 
@@ -157,7 +203,7 @@ fn git_portion(t: &Theme) -> String {
     let git = Git::get();
 
     if !git.root.is_empty() {
-        let git_stat = git.stat();
+        let git_stat = git.stat().unwrap();
         let in_submodule = git.root.len() > 1;
         format!(
             " {}",
