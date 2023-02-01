@@ -133,14 +133,13 @@ impl Git {
                 let g = p.join(".git");
                 if g.exists() {
                     if g.is_file() {
-                        Some(
-                            std::fs::read_to_string(g)
-                                .unwrap()
-                                .trim()
-                                .strip_prefix("gitdir: ")
-                                .unwrap()
-                                .into(),
-                        )
+                        let gitdir: PathBuf = std::fs::read_to_string(g)
+                            .unwrap()
+                            .trim()
+                            .strip_prefix("gitdir: ")
+                            .unwrap()
+                            .into();
+                        Some(p.join(gitdir))
                     } else {
                         Some(g)
                     }
